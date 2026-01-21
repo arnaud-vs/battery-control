@@ -1,0 +1,24 @@
+battery:
+  name: "BESS_1"
+  energy_kwh: 16000.0
+  p_charge_kw_max: 4000.0
+  p_discharge_kw_max: 4000.0
+  eta_charge: 0.96
+  eta_discharge: 0.96
+  soc_min: 0.10
+  soc_max: 0.90
+  soc_init: 0.50
+  soc_target: null        # or 0.50 if you want end-SOC constraint
+
+markets:
+  da:
+    dt_minutes: 60
+    horizon_steps: 24
+    grid_fee_eur_per_mwh: 0.0
+    allow_simultaneous_charge_discharge: false
+
+  ip:
+    dt_minutes: 15
+    horizon_steps: 96
+    grid_fee_eur_per_mwh: 0.0
+    allow_simultaneous_charge_discharge: false

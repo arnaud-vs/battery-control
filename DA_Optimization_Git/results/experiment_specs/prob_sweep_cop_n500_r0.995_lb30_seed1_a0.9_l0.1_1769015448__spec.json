@@ -1,0 +1,13 @@
+{
+  "scenario_method": "copula",
+  "n_scenarios": 500,
+  "lam_corr": 0.995,
+  "lookback_days": 30,
+  "base_seed": 1,
+  "alpha": 0.9,
+  "lambda_cvar": 0.1,
+  "terminal_penalty": 0.05,
+  "terminal_penalty_mode": "L1",
+  "cycle_penalty_eur_per_mwh": 3.0,
+  "name": "cop_n500_r0.995_lb30_seed1_a0.9_l0.1"
+}

@@ -68,7 +68,6 @@ def _jsonable(obj: Any) -> Any:
             return d
     return str(obj)
 
-
 def build_ip_run_metadata(
     *,
     forecast_model_name: str,
@@ -85,10 +84,14 @@ def build_ip_run_metadata(
     price_source_forecast: str = "forecast",
     price_source_benchmark: str = "perfect_foresight",
     code_versions: Optional[Dict[str, str]] = None,
-    weight_method: Optional[str] = None,
+    scenario_method: Optional[str] = None,
+    cycle_penalty_eur_per_mwh: float,
+    n_scenarios=Optional[float],
+    lam_corr=Optional[float],
+    lookback_days=Optional[float],
+    base_seed=Optional[float],
 ) -> Dict[str, Any]:
-    return {
-        "run_type": "rolling_ce_ip",
+    meta = {
         "forecast_model": forecast_model_name,
         "forecast_type": forecast_type,
         "price_source_forecast": price_source_forecast,
@@ -103,12 +106,26 @@ def build_ip_run_metadata(
             "terminal_penalty": float(terminal_penalty),
             "terminal_penalty_mode": str(terminal_penalty_mode),
         },
+        "cycle_penalty_eur_per_mwh": cycle_penalty_eur_per_mwh,
         "solver": str(solver_name),
         "code_versions": code_versions or {},
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "weight_method": weight_method or {},
     }
 
+    # ---------- only for probabilistic ----------
+    if forecast_type == "probabilistic":
+        meta["scenario_method"] = scenario_method
+
+        # ---------- only for copula ----------
+        if scenario_method == "copula":
+            meta.update({
+                "n_scenarios": n_scenarios,
+                "lam_corr": lam_corr,
+                "lookback_days": lookback_days,
+                "base_seed": base_seed,
+            })
+
+    return meta
 
 def save_parquet_with_metadata(
     df: pd.DataFrame,
@@ -130,7 +147,6 @@ def save_parquet_with_metadata(
 
     pq.write_table(table, path, compression=compression)
     return path
-
 
 def default_ip_results_path(
     project_root: Path,
@@ -159,3 +175,83 @@ def load_results_parquet(path: Path) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         except Exception:
             run_meta = {"_raw_run_metadata": meta[b"run_metadata"].decode("utf-8", errors="ignore")}
     return df, run_meta
+################### Result Analysis ###################
+
+def _col(base: str, var: str) -> str:
+    return f"{base}.{var}"
+
+
+
+_REQUIRED_VARS = [
+    "E_start_kwh",
+    "E_end_kwh",
+    "e_ch_kwh",
+    "e_dis_kwh",
+    "price_qh1_eur_per_mwh",
+    "profit_forecast_eur",
+    "profit_realized_eur",
+]
+
+def validate_strategy_block(df: pd.DataFrame, base: str, *, require_price: bool = True) -> None:
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("df index must be a DatetimeIndex")
+    if df.index.has_duplicates:
+        raise ValueError("df index has duplicates; expected unique timestamps")
+
+    req = list(_REQUIRED_VARS)
+    if not require_price:
+        req = [v for v in req if v != "price_qh1_eur_per_mwh"]
+
+    missing = [ _col(base, v) for v in req if _col(base, v) not in df.columns ]
+    if missing:
+        raise ValueError(f"Missing required columns for base='{base}': {missing}")
+
+
+def analyze_parquet(path: Path, *, benchmark_source="perfect_foresight", naive_source="naive", cvar_alpha: float = 0.95):
+    df, meta = load_results_parquet(path)
+    kpi = compare_strategies(
+        df,
+        meta=meta,
+        include_benchmarks=True,
+        benchmark_source=benchmark_source,
+        naive_source=naive_source,
+        cvar_alpha=cvar_alpha,
+    )
+    return df, meta, kpi
+
+
+def cumulative(series: pd.Series) -> pd.Series:
+    return series.fillna(0.0).cumsum()
+
+
+def battery_capacity_kwh_from_meta(meta: Dict[str, Any]) -> Optional[float]:
+    """
+    Tries to extract usable battery energy capacity from run metadata.
+    Supports common shapes produced by your _jsonable(battery).
+    Returns None if not found.
+    """
+    if not meta:
+        return None
+    b = meta.get("battery", None)
+    if not isinstance(b, dict):
+        return None
+
+    # common patterns you might have
+    for k in ["energy_kwh", "capacity_kwh", "E_kwh", "e_max_kwh"]:
+        if k in b:
+            try:
+                return float(b[k])
+            except Exception:
+                pass
+
+    # sometimes nested
+    for k in ["spec", "params", "battery"]:
+        if k in b and isinstance(b[k], dict):
+            for kk in ["energy_kwh", "capacity_kwh"]:
+                if kk in b[k]:
+                    try:
+                        return float(b[k][kk])
+                    except Exception:
+                        pass
+
+    return None
