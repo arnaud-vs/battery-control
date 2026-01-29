@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 DT_DEFAULT = pd.Timedelta(minutes=15)
 
 def _get_qcols(k: int, quantiles: Sequence[float]) -> list[str]:
-    return [f"qh{k}_q{q:.1f}" for q in quantiles]
+    return [f"qh{k}_q{q:.2f}" for q in quantiles]
 
 def inverse_cdf_from_quantiles(u: float, quantiles: np.ndarray, values: np.ndarray) -> float:
     q_ext = np.concatenate(([0.0], quantiles, [1.0]))
@@ -45,8 +45,11 @@ def compute_gaussian_errors_with_pit(
             p_real = float(ip_real.loc[t_real])
             q_vals = ip_prob.loc[s, _get_qcols(k, quantiles)].values.astype(float)
             q_vals = np.maximum.accumulate(q_vals)
+            mask = np.r_[True, np.diff(q_vals) > 0]
+            q_vals_u = q_vals[mask]
+            qs_u = quantiles[mask]
 
-            u = np.interp(p_real, q_vals, quantiles, left=0.0, right=1.0)
+            u = np.interp(p_real, q_vals_u, qs_u, left=0.0, right=1.0)
             u = float(np.clip(u, 1e-6, 1 - 1e-6))
             x_s.append(float(norm.ppf(u)))
 
@@ -108,6 +111,18 @@ def generate_copula_scenarios_at_t(
     for k in range(1, K + 1):
         q_vals = ip_prob_row[_get_qcols(k, quantiles)].values.astype(float)
         q_vals = np.maximum.accumulate(q_vals)
-        for s in range(n_scenarios):
-            scen[s, k - 1] = inverse_cdf_from_quantiles(float(Ys[s, k - 1]), quantiles, q_vals)
+
+        mask = np.r_[True, np.diff(q_vals) > 0]
+        qv = q_vals[mask]
+        qs = quantiles[mask]
+        
+        #for s in range(n_scenarios):
+        #    scen[s, k - 1] = inverse_cdf_from_quantiles(float(Ys[s, k - 1]), quantiles, q_vals)
+
+        scen[:, k-1] = np.interp(
+            Ys[:, k-1],
+            np.r_[0.0, qs, 1.0],
+            np.r_[qv[0], qv, qv[-1]],
+        )
+
     return scen

@@ -551,7 +551,7 @@ def _run_ip_rolling_prob_single(
                 for s_idx in range(S):
                     m.scen_price[t_h, s_idx].set_value(float(scen_paths[s_idx, t_h]))
 
-        solver.solve(m, tee=False)
+        solver.solve(m, tee=True)
 
         # Implement first action only
         e_ch0 = float(pyo.value(m.e_ch[0]))
@@ -692,7 +692,7 @@ def run_ip_rolling_prob_models(
     out = IPRollingResult(history=hist, final_energy_kwh=list(final_E.values())[-1])
 
     if save:
-        project_root = Path.cwd().parent
+        project_root = Path(__file__).resolve().parents[2]
         safe_tag = f"_{tag}" if tag else ""
         copula_info = f"_lambCorr_{lam_corr}" if scenario_method=="copula" else ""
         models_str = "-".join(sorted([str(k).lower() for k in forecasts.keys()]))
