@@ -19,7 +19,7 @@ def compute_gaussian_errors_with_pit(
     *,
     K: int,
     quantiles: np.ndarray,
-    as_of: pd.Timestamp,
+    as_of: Optional[pd.Timestamp] = None,
     dt: pd.Timedelta = DT_DEFAULT,
 ):
     """
@@ -29,8 +29,9 @@ def compute_gaussian_errors_with_pit(
     ip_prob = ip_prob.sort_index()
     ip_real = ip_real.sort_index()
 
-    cutoff = pd.to_datetime(as_of) - K * dt
-    ip_prob = ip_prob.loc[ip_prob.index <= cutoff]
+    if as_of is not None:
+        cutoff = pd.to_datetime(as_of) - K * dt
+        ip_prob = ip_prob.loc[ip_prob.index <= cutoff]
 
     X_rows, idx = [], []
     for s in ip_prob.index:
@@ -126,3 +127,39 @@ def generate_copula_scenarios_at_t(
         )
 
     return scen
+def precompute_sigma_stream(
+    ip_prob: pd.DataFrame,
+    ip_real: pd.Series,
+    *,
+    K: int,
+    quantiles: np.ndarray,
+    dt: pd.Timedelta,
+    lam: float,
+) -> pd.Series:
+    """
+    Returns a pd.Series indexed by forecast origin time s, whose values are Sigma
+    (correlation) after processing x_s (EWMA).
+    Strict no-leak is satisfied if you only query Sigma at cutoff = ts - K*dt.
+    """
+    X_df = compute_gaussian_errors_with_pit(
+        ip_prob, ip_real, K=K, quantiles=quantiles, as_of=None, dt=dt
+    )
+    # ^ trick: compute all possible x_s (function filters by as_of; we bypass by setting huge as_of)
+    # If you dislike that trick, write a "compute_all_gaussian_errors_with_pit" variant without cutoff.
+
+    if X_df.empty:
+        return pd.Series(dtype=object)
+
+    Sigma = np.eye(K)
+    sigmas = {}
+
+    for s, row in X_df.iterrows():
+        xt = row.values.astype(float).reshape(-1, 1)
+        Sigma = lam * Sigma + (1 - lam) * (xt @ xt.T)
+
+        std = np.sqrt(np.diag(Sigma))
+        Sigma_corr = Sigma / np.outer(std, std)
+
+        sigmas[s] = Sigma_corr.copy()
+
+    return pd.Series(sigmas).sort_index()

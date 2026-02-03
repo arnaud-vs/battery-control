@@ -318,7 +318,7 @@ def plot_det_horizon_metrics(metrics: pd.DataFrame, *, title: str = "Determinist
     if "RMSE" in metrics.columns:
         plt.plot(horizons, metrics["RMSE"].to_numpy(), marker="o", label="RMSE")
     plt.xlabel("Horizon (qh)")
-    plt.ylabel("Error")
+    plt.ylabel("Error (q0.5)")
     plt.title(title)
     plt.grid(True)
     plt.legend()
@@ -359,4 +359,56 @@ def plot_calibration_curve(calibration: pd.DataFrame, *, horizon: int = 1, title
     plt.title(title or f"Calibration curve (horizon qh{horizon})")
     plt.grid(True)
     plt.legend()
+    plt.show()
+
+
+def plot_prob_sharpness(
+    sharpness: pd.DataFrame,
+    *,
+    title: str = "Sharpness (average interval width) by horizon",
+    normalize: bool = False,
+):
+    """
+    sharpness: prob_out["sharpness"] (index=horizon, columns interval labels + N)
+
+    normalize=True: divide widths by |median| to reduce scale effects (optional).
+    If you want a more principled normalization, use IQR or median absolute deviation.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    horizons = sharpness.index.to_numpy()
+    cols = [c for c in sharpness.columns if c.startswith("[q")]
+
+    plt.figure()
+    for c in cols:
+        y = sharpness[c].to_numpy(dtype=float)
+        if normalize:
+            # simple normalization: by median width over horizons (keeps dimensionless)
+            denom = np.nanmedian(y)
+            if np.isfinite(denom) and denom > 0:
+                y = y / denom
+        plt.plot(horizons, y, marker="o", label=c)
+
+    plt.xlabel("Horizon (qh)")
+    plt.ylabel("Avg interval width" + (" (normalized)" if normalize else " (€/MWh)"))
+    plt.title(title)
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_prob_crps(crps: pd.DataFrame, *, title: str = "CRPS by horizon"):
+    import matplotlib.pyplot as plt
+
+    horizons = crps.index.to_numpy()
+    plt.figure()
+    plt.plot(horizons, crps["CRPS"].to_numpy(dtype=float), marker="o", label="CRPS")
+    plt.xlabel("Horizon (qh)")
+    plt.ylabel("CRPS (€/MWh)")
+    plt.title(title)
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
     plt.show()

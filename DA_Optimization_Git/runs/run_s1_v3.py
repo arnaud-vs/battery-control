@@ -29,7 +29,7 @@ terminal_penalty = 0.1
 
 # Pick ONE risk configuration:
 alpha = 0.95
-lambda_cvar = 0.1   # or 0.1
+lambda_cvar = 0.3   # or 0.1
 
 print(f"Running copula: alpha={alpha}, lambda_cvar={lambda_cvar}")
 
@@ -47,7 +47,6 @@ res = optimizations.run_ip_rolling_prob_models(
     scenario_method="copula",
     n_scenarios=100,
     lam_corr=0.995,
-    lookback_days=30,
     save=True,
     tag="v1",
     cycle_penalty_eur_per_mwh=0,

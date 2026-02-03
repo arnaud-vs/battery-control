@@ -2,7 +2,6 @@
 import os
 import sys
 from pathlib import Path
-
 # Keep numpy/BLAS from spawning extra threads; let Gurobi have the CPU.
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -13,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-    
+
 import src.config_loader as config_loader
 import util.read_price as read_price
 import src.ip.optimizations as optimizations
@@ -30,7 +29,7 @@ terminal_penalty = 0.1
 
 # Pick ONE risk configuration:
 alpha = 0.95
-lambda_cvar = 0.3   # or 0.1
+lambda_cvar = 0.1   # or 0.1
 
 print(f"Running copula: alpha={alpha}, lambda_cvar={lambda_cvar}")
 
@@ -46,9 +45,8 @@ res = optimizations.run_ip_rolling_prob_models(
     terminal_penalty=terminal_penalty,
     terminal_penalty_mode="L1",
     scenario_method="copula",
-    n_scenarios=50,
+    n_scenarios=100,
     lam_corr=0.995,
-    lookback_days=15,
     save=True,
     tag="v1",
     cycle_penalty_eur_per_mwh=0,

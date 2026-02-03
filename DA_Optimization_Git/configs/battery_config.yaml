@@ -8,7 +8,6 @@ battery:
   soc_min: 0.10
   soc_max: 0.90
   soc_init: 0.50
-  soc_target: null        # or 0.50 if you want end-SOC constraint
 
 markets:
   da:

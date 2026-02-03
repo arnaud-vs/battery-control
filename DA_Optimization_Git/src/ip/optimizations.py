@@ -16,7 +16,7 @@ from src.ip.forecast import deterministic_vector_from_row
 from src.ip.objectives import add_objective_certainty_equivalent, ensure_scenario_price_param, add_objective_mean_cvar
 from typing import Optional, Union, Sequence, Literal, Dict, Any
 from pathlib import Path
-from src.ip.scenarios import sigma_as_of, generate_copula_scenarios_at_t  # NEW
+from src.ip.scenarios import generate_copula_scenarios_at_t, precompute_sigma_stream
 
 PriceSource = Literal["forecast", "perfect_foresight", "naive"]
 ScenarioMethod = Literal["quantile_paths", "copula"]
@@ -395,7 +395,6 @@ def _run_ip_rolling_prob_single(
     scenario_method: ScenarioMethod = "quantile_paths",
     n_scenarios: int = 500,                 # only used when scenario_method="copula"
     lam_corr: float = 0.995,                # EWMA lambda for Sigma_t
-    lookback_days: int = 30,                # limit history used for Sigma_t
     base_seed: int = 123,                   # reproducible scenarios
     cycle_penalty_eur_per_mwh: float = 0.0,  
 ) -> IPRollingResult:
@@ -492,15 +491,33 @@ def _run_ip_rolling_prob_single(
 
     rows = []
     n = len(ip_prob_forecast)
+    Sigma_stream = None
+    sigma_times = None
+    sigma_vals = None
 
+    dt = pd.Timedelta(minutes=getattr(market, "dt_minutes", 15))  # define once
+
+    if scenario_method == "copula":
+        if real_price_full is None:
+            raise ValueError("scenario_method='copula' requires real_price_series.")
+        Sigma_stream = precompute_sigma_stream(
+            ip_prob_forecast,
+            real_price_full,
+            K=horizon_steps,
+            quantiles=quantiles,
+            dt=dt,
+            lam=lam_corr,
+        )
+        # numpy arrays for fast searchsorted lookup
+        sigma_times = Sigma_stream.index.values
+        sigma_vals = Sigma_stream.values
+    
     for a, (ts, f_row) in enumerate(ip_prob_forecast.iterrows()):
         progress = 100 * a / n
         print(f"\rSolving prob {mode_label}: {progress:5.1f} %", end="", flush=True)
 
         m.E_init.set_value(float(E))
 
-        dt = pd.Timedelta(minutes=getattr(market, "dt_minutes", 15))
-        lookback = pd.Timedelta(days=int(lookback_days))
 
         if scenario_method == "quantile_paths":
             # Existing behavior: scenario s = same quantile level across all horizons
@@ -524,17 +541,13 @@ def _run_ip_rolling_prob_single(
             if real_price_full is None:
                 raise ValueError("scenario_method='copula' requires real_price_series (to estimate Sigma causally).")
 
-            # 1) strictly-causal Sigma_t
-            Sigma_t = sigma_as_of(
-                ip_prob_hist=ip_prob_forecast,     # full history, but sigma_as_of will cut it causally using t_now
-                ip_real=real_price_full,
-                t_now=ts,
-                K=horizon_steps,
-                quantiles=quantiles,
-                lam=lam_corr,
-                dt=dt,
-                lookback=lookback,
-            )
+            cutoff = np.datetime64(ts - horizon_steps * dt)
+
+            if sigma_times is None or len(sigma_times) == 0:
+                Sigma_t = np.eye(horizon_steps)
+            else:
+                i = np.searchsorted(sigma_times, cutoff, side="right") - 1
+                Sigma_t = np.eye(horizon_steps) if i < 0 else sigma_vals[i]
 
             # 2) scenario paths (S x K), correlated across horizons
             scen_paths = generate_copula_scenarios_at_t(
@@ -551,7 +564,7 @@ def _run_ip_rolling_prob_single(
                 for s_idx in range(S):
                     m.scen_price[t_h, s_idx].set_value(float(scen_paths[s_idx, t_h]))
 
-        solver.solve(m, tee=True)
+        solver.solve(m, tee=False)
 
         # Implement first action only
         e_ch0 = float(pyo.value(m.e_ch[0]))
@@ -619,7 +632,6 @@ def run_ip_rolling_prob_models(
     scenario_method: ScenarioMethod = "quantile_paths",
     n_scenarios: int = 500,
     lam_corr: float = 0.995,
-    lookback_days: int = 30,
     base_seed: int = 123,
     cycle_penalty_eur_per_mwh: float = 0.0,  
 ) -> IPRollingResult:
@@ -669,7 +681,6 @@ def run_ip_rolling_prob_models(
             scenario_method=scenario_method,
             n_scenarios=n_scenarios,
             lam_corr=lam_corr,
-            lookback_days=lookback_days,
             base_seed=base_seed,
             cycle_penalty_eur_per_mwh = cycle_penalty_eur_per_mwh,
         )
@@ -724,7 +735,6 @@ def run_ip_rolling_prob_models(
             scenario_method=scenario_method,
             n_scenarios=n_scenarios,
             lam_corr=lam_corr,
-            lookback_days=lookback_days,
             base_seed=base_seed,
             cycle_penalty_eur_per_mwh=float(cycle_penalty_eur_per_mwh)
 
