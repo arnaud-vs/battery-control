@@ -59,7 +59,11 @@ import pandas as pd
 # ---------------- Types ----------------
 
 Market = Literal["DA", "IP"]
-Model = Literal["LEAR", "XGB", "QR"]
+Model = Literal[
+    "LEAR", "XGB", "QR",
+    "twostep0p0", "twostep0p05", "twostep0p1", "twostep0p15", "twostep0p2",
+    "twostep0p25", "twostep0p3", "twostep0p35", "twostep0p4", "twostep0p45", "twostep0p5",
+]
 OutputKind = Literal["deterministic", "probabilistic"]
 
 
@@ -389,7 +393,7 @@ def _select_ip_forecast_columns(
         return f"qh{h}"
 
     if kind == "deterministic":
-        if model in ("LEAR", "XGB"):
+        if (model in ("LEAR", "XGB")) or (model.startswith("twostep")):
             det_cols = [det_col(h) for h in h_list]
             missing = [c for c in det_cols if c not in df.columns]
             if missing:

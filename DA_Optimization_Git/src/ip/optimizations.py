@@ -69,6 +69,9 @@ def _run_ip_rolling_ce_single(
     terminal_penalty_mode: TerminalPenaltyMode = "none",
     cycle_penalty_eur_per_mwh: float = 0.0,
     prefix: str,
+    price_period_minutes: Optional[int] = None,  # set (e.g. 15) for sub-period decisions: decide
+                                                 # every forecast step but settle/realize on a coarser
+                                                 # price period (per-minute decisions, per-QH prices)
 
 ) -> IPRollingResult:
     if ip_det_forecast.empty:
@@ -90,6 +93,18 @@ def _run_ip_rolling_ce_single(
     real_price_full = None
     if real_price_series is not None:
         real_price_full = real_price_series.sort_index()
+
+    # Sub-period (decouple) setup. price_period_minutes=None -> classic behaviour (frac=1: each
+    # decision step realizes one full price period). When set, the forecast steps faster than the
+    # price period (e.g. per-minute decisions on a 15-min QH price): we commit only `frac` of the
+    # first horizon step's energy/profit per decision and settle at the period's realized price.
+    if price_period_minutes is None:
+        frac = 1.0
+        period_floor = None
+    else:
+        dec_min = float(pd.Series(ip_det_forecast.index).diff().median().total_seconds()) / 60.0
+        frac = dec_min / float(price_period_minutes)
+        period_floor = f"{int(price_period_minutes)}min"
 
     # Initial energy
     bd0 = battery.discretize(market.dt_minutes)
@@ -144,9 +159,15 @@ def _run_ip_rolling_ce_single(
         # Update initial SOC
         m.E_init.set_value(float(E))
 
-        dt = pd.Timedelta(minutes=15)
-        if real_price_full is not None and len(real_price_full.index) >= 2:
-            dt = real_price_full.index[1] - real_price_full.index[0]
+        # Horizon period: price-period spacing when decoupled, else the realized-price index step.
+        if period_floor is not None:
+            dt = pd.Timedelta(minutes=int(price_period_minutes))
+            base_ts = ts.floor(period_floor)  # the price period (QH) the current decision falls in
+        else:
+            dt = pd.Timedelta(minutes=15)
+            if real_price_full is not None and len(real_price_full.index) >= 2:
+                dt = real_price_full.index[1] - real_price_full.index[0]
+            base_ts = ts
 
         # Update price parameters for horizon
         if price_source == "forecast":
@@ -156,7 +177,7 @@ def _run_ip_rolling_ce_single(
             if real_price_full is None:
                 raise ValueError("price_source='perfect_foresight' requires real_price_series.")
 
-            idx = [ts + k * dt for k in range(horizon_steps)]
+            idx = [base_ts + k * dt for k in range(horizon_steps)]
             missing = [t for t in idx if t not in real_price_full.index]
             if missing:
                 raise KeyError(f"Perfect foresight horizon missing {len(missing)} timestamps (e.g. {missing[0]}) around ts={ts}.")
@@ -167,7 +188,7 @@ def _run_ip_rolling_ce_single(
         elif price_source == "naive":
             if real_price_full is None:
                 raise ValueError("price_source='naive' requires real_price_series.")
-            p = naive_horizon_from_real(real_price_full, ts, horizon_steps, dt)
+            p = naive_horizon_from_real(real_price_full, base_ts, horizon_steps, dt)
 
         else:
             raise ValueError(f"Unknown price_source: {price_source}")
@@ -178,20 +199,23 @@ def _run_ip_rolling_ce_single(
         # Solve
         solver.solve(m, tee=False)
 
-        # Implement first action only
-        e_ch0 = float(pyo.value(m.e_ch[0]))
-        e_dis0 = float(pyo.value(m.e_dis[0]))
+        # Implement first action only. When decoupled (frac<1) we realize just `frac` of the first
+        # horizon step's energy/profit per decision, then re-solve next step with a refined forecast.
+        e_ch0 = float(pyo.value(m.e_ch[0])) * frac
+        e_dis0 = float(pyo.value(m.e_dis[0])) * frac
         E_start = float(E)
 
         E = E + float(battery.eta_charge) * e_ch0 - (1.0 / float(battery.eta_discharge)) * e_dis0
         E = min(max(E, e_min), e_max)
 
+        # Realized price for settlement: at the price period (QH) the decision falls in when decoupled.
+        real_ts = ts.floor(period_floor) if period_floor is not None else ts
         real_p = (
-            float(real_price_full.loc[ts])
-            if (real_price_full is not None and ts in real_price_full.index)
+            float(real_price_full.loc[real_ts])
+            if (real_price_full is not None and real_ts in real_price_full.index)
             else np.nan
         )
-        forecasted_profit = ((p[0] - fee) / 1000.0) * (e_dis0 - e_ch0) 
+        forecasted_profit = ((p[0] - fee) / 1000.0) * (e_dis0 - e_ch0)
         realized_profit = ((real_p - fee) / 1000.0) * (e_dis0 - e_ch0) if not np.isnan(real_p) else np.nan
 
         profit_forecast = forecasted_profit if price_source != "perfect_foresight" else np.nan
@@ -238,6 +262,7 @@ def run_ip_rolling_ce_models(
     save: bool = True,
     tag: Optional[str] = None,
     code_versions: Optional[Dict[str, str]] = None,
+    price_period_minutes: Optional[int] = None,  # set (e.g. 15) for per-minute decisions on QH prices
 ) -> IPRollingResult:
 
     # normalize sources
@@ -281,6 +306,7 @@ def run_ip_rolling_ce_models(
             terminal_penalty=terminal_penalty,
             terminal_penalty_mode=terminal_penalty_mode,
             cycle_penalty_eur_per_mwh = cycle_penalty_eur_per_mwh,
+            price_period_minutes=price_period_minutes,
         )
         dfs.append(res.history)
         final_E[prefix] = res.final_energy_kwh

@@ -1,0 +1,9 @@
+
+# macOS / IDE / bytecode
+.DS_Store
+__pycache__/
+*.pyc
+.idea/
+
+# Large local data + generated results (not versioned)
+Data/EPEXData/

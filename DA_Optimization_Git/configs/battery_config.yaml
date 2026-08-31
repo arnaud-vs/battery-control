@@ -1,6 +1,6 @@
 battery:
   name: "BESS_1"
-  energy_kwh: 16000.0
+  energy_kwh: 8000.0
   p_charge_kw_max: 4000.0
   p_discharge_kw_max: 4000.0
   eta_charge: 0.96

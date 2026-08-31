@@ -88,20 +88,26 @@ def _build_terminal_penalty_expr(
     if not use_penalty:
         return penalty_expr
 
-    # mutable params so you can update them in rolling runs if you want
-    m.E_target = pyo.Param(initialize=float(terminal_target_kwh), mutable=True)
-    m.lambda_terminal = pyo.Param(initialize=float(terminal_penalty), mutable=True)
+    # Use plain floats as coefficients so Pyomo can determine polynomial degree (needed for appsi_highs).
+    # Mutable Param * Var² gives degree=None; float * Var² gives degree=2.
+    # m.E_target = pyo.Param(initialize=float(terminal_target_kwh), mutable=True)
+    # m.lambda_terminal = pyo.Param(initialize=float(terminal_penalty), mutable=True)
+    lam = float(terminal_penalty)
+    target = float(terminal_target_kwh)
 
     T_end = max(m.Tp1)  # horizon_steps
 
     if terminal_penalty_mode == "L1":
         m.dev_pos = pyo.Var(domain=pyo.NonNegativeReals)
         m.dev_neg = pyo.Var(domain=pyo.NonNegativeReals)
-        m.terminal_dev = pyo.Constraint(expr=m.E[T_end] - m.E_target == m.dev_pos - m.dev_neg)
-        penalty_expr = m.lambda_terminal * (m.dev_pos + m.dev_neg)
+        # m.terminal_dev = pyo.Constraint(expr=m.E[T_end] - m.E_target == m.dev_pos - m.dev_neg)
+        # penalty_expr = m.lambda_terminal * (m.dev_pos + m.dev_neg)
+        m.terminal_dev = pyo.Constraint(expr=m.E[T_end] - target == m.dev_pos - m.dev_neg)
+        penalty_expr = lam * (m.dev_pos + m.dev_neg)
 
     elif terminal_penalty_mode == "L2":
-        penalty_expr = m.lambda_terminal * (m.E[T_end] - m.E_target) ** 2
+        # penalty_expr = m.lambda_terminal * (m.E[T_end] - m.E_target) ** 2
+        penalty_expr = lam * (m.E[T_end] - target) ** 2
 
     else:
         raise ValueError(f"Unknown terminal_penalty_mode: {terminal_penalty_mode}")

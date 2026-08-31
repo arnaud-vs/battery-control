@@ -4,18 +4,26 @@ import time
 from ip_results import load_results_parquet
 from pathlib import Path
 
+fontsize = 16
+
+def _infer_dt(index):
+    """Decision step of a result, inferred from its own index (pm=1min, qh=15min)."""
+    dt = index.to_series().diff().median()
+    return dt, dt / pd.Timedelta(hours=1)  # (Timedelta, hours) — hours converts energy[kWh]→power[kW]
+
 # Plotting functions
 def plot_trading_decisions(results, labels, prefixes, forecast, real_prices, start, end, probabilistic, quantiles, alphas):
     forecast = forecast.loc[start:end]
     real_prices = real_prices.loc[start:end]
 
-    fig, axs = plt.subplots(nrows=4, ncols=len(results), sharex='all', sharey='row')
+    fig, axs = plt.subplots(nrows=3, ncols=len(results), sharex='all', sharey='row')
     for i, r in enumerate(results):
         df, metadata = r
         df = df.loc[start:end]
         battery = metadata['battery']
-        P = ( (df[f'{prefixes[i]}.e_ch_kwh']/0.25 / battery['p_charge_kw_max'])
-              - (df[f'{prefixes[i]}.e_dis_kwh']/0.25 / battery['p_discharge_kw_max']) ) * 100
+        dt, dt_h = _infer_dt(df.index)
+        P = ( (df[f'{prefixes[i]}.e_ch_kwh']/dt_h / battery['p_charge_kw_max'])
+              - (df[f'{prefixes[i]}.e_dis_kwh']/dt_h / battery['p_discharge_kw_max']) ) * 100
         soc = df[f'{prefixes[i]}.E_start_kwh'] / battery['energy_kwh'] * 100
 
         axs[0, i].grid(alpha=0.5)
@@ -26,35 +34,76 @@ def plot_trading_decisions(results, labels, prefixes, forecast, real_prices, sta
                 upper = forecast[f'q{1 - quantiles[q]:.2f}_qh1']
                 axs[0, i].fill_between(forecast.index, lower, upper, step='post', color='C0', alpha=alphas[q])
         if prefixes[i] != 'benchmark.perfect_foresight':
-            axs[0, i].step(forecast.index, forecast['q0.50_qh1'], where='post', label='Forecast QH1', color='C0')
-        axs[0, i].legend()
-        axs[0, i].set_ylabel('Imbalance price [€/MWh]')
-        axs[0, i].set_title(labels[i])
+            # Use each result's own recorded qh1 forecast (works for pm & qh; no external quantile csv needed)
+            fc_col = f'{prefixes[i]}.price_qh1_eur_per_mwh'
+            fc = df[fc_col] if fc_col in df.columns else forecast['q0.50_qh1']
+            axs[0, i].step(fc.index, fc, where='post', label='Forecast QH1', color='C0')
+        axs[0, i].legend(fontsize=fontsize-2)
+        axs[0, i].set_ylabel('Imbalance price [€/MWh]', fontsize=fontsize)
+        axs[0, i].set_title(labels[i], fontsize=fontsize)
         axs[0, i].tick_params(labelleft=True)
 
         axs[1, i].grid(alpha=0.5)
-        axs[1, i].bar(P.index[:-1], P.iloc[:-1], width=pd.Timedelta(minutes=15), align='edge', label='Battery setpoint', alpha=0.5, color='C0')
+        axs[1, i].bar(P.index[:-1], P.iloc[:-1], width=dt, align='edge', label='Battery setpoint', alpha=0.5, color='C0')
         axs[1, i].axhline(100, linestyle='--', color='C0', label='Power limits')
         axs[1, i].axhline(-100, linestyle='--', color='C0')
-        axs[1, i].legend()
-        axs[1, i].set_ylabel('Power [%]')
+        axs[1, i].legend(fontsize=fontsize-2)
+        axs[1, i].set_ylabel('Power [%]', fontsize=fontsize)
         axs[1, i].tick_params(labelleft=True)
 
         axs[2, i].grid(alpha=0.5)
         axs[2, i].plot(soc, label='Battery SoC', color='C0')
         axs[2, i].axhline(battery['soc_max']*100, linestyle='--', color='C0', label='SoC limits')
         axs[2, i].axhline(battery['soc_min']*100, linestyle='--', color='C0')
-        axs[2, i].legend()
-        axs[2, i].set_ylabel('State of Charge [%]')
+        axs[2, i].legend(fontsize=fontsize-2)
+        axs[2, i].set_ylabel('State of Charge [%]', fontsize=fontsize)
         axs[2, i].tick_params(labelleft=True)
+        axs[2, i].tick_params(axis='x', labelrotation=45)
 
-        axs[3, i].grid(alpha=0.5)
-        axs[3, i].plot(df[f'{prefixes[i]}.profit_realized_eur'].cumsum(), color='C0')
-        axs[3, i].set_ylabel('Cumulative profit [€]')
-        axs[3, i].tick_params(labelleft=True)
+        # axs[3, i].grid(alpha=0.5)
+        # axs[3, i].plot(df[f'{prefixes[i]}.profit_realized_eur'].cumsum(), color='C0')
+        # axs[3, i].set_ylabel('Cumulative profit [€]')
+        # axs[3, i].tick_params(labelleft=True)
 
-    fig.suptitle('Battery decisions with model predictive control')
-    fig.supxlabel('Time')
+    fig.suptitle('Battery decisions with model predictive control', fontsize=fontsize)
+    fig.supxlabel('Time', fontsize=fontsize)
+    plt.show()
+
+
+def plot_price_and_decisions(results, labels, prefixes, real_prices, start, end):
+    """2 stacked subplots: (top) real price + each forecast, (bottom) power setpoints, all as step lines."""
+    real_prices = real_prices.loc[start:end]
+    fig, axs = plt.subplots(nrows=2, ncols=1, sharex='all')
+
+    axs[0].step(real_prices.index, real_prices, where='post', label='Real imbalance price', color='k', linewidth=2)
+    for i, r in enumerate(results):
+        if 'perfect_foresight' in prefixes[i]:   # its "forecast" is the real price -> skip
+            continue
+        df, _ = r
+        df = df.loc[start:end]
+        fc = df[f'{prefixes[i]}.price_qh1_eur_per_mwh']
+        axs[0].step(fc.index, fc, where='post', label=f'Forecast {labels[i]}', color=f'C{i}')
+    axs[0].set_ylabel('Imbalance price [€/MWh]', fontsize=fontsize)
+    axs[0].legend(fontsize=fontsize-2)
+    axs[0].grid(alpha=0.5)
+
+    for i, r in enumerate(results):
+        df, metadata = r
+        df = df.loc[start:end]
+        battery = metadata['battery']
+        _, dt_h = _infer_dt(df.index)
+        P = ( (df[f'{prefixes[i]}.e_ch_kwh']/dt_h / battery['p_charge_kw_max'])
+              - (df[f'{prefixes[i]}.e_dis_kwh']/dt_h / battery['p_discharge_kw_max']) ) * 100
+        axs[1].step(P.index, P, where='post', label=labels[i], color=f'C{i}')
+    axs[1].axhline(100, linestyle='--', color='grey', label='Power limits')
+    axs[1].axhline(-100, linestyle='--', color='grey')
+    axs[1].set_ylabel('Power [%]', fontsize=fontsize)
+    axs[1].legend(fontsize=fontsize-2)
+    axs[1].grid(alpha=0.5)
+    axs[1].tick_params(axis='x', labelrotation=45)
+
+    fig.suptitle('Price forecasts and trading decisions', fontsize=fontsize)
+    fig.supxlabel('Time', fontsize=fontsize)
     plt.show()
 
 
@@ -66,28 +115,38 @@ def plot_cumulative_results(results, labels, prefixes):
     for i, r in enumerate(results):
         df, metadata = r
 
-        axs[0].plot(df[f'{prefixes[i]}.profit_realized_eur'].cumsum(), label=labels[i])
+        axs[0].plot(df[f'{prefixes[i]}.profit_realized_eur'].cumsum(), label=labels[i], linewidth=2)
         # axs[0].plot(rbc['Profit'].cumsum(), label='Rule-based control')
-        axs[0].legend()
-        axs[0].set_ylabel('Cumulative profit [€]')
-        axs[0].set_title('Cumulative profit')
+        axs[0].legend(fontsize=fontsize)
+        axs[0].set_ylabel('Cumulative profit [€]', fontsize=fontsize)
+        axs[0].set_title('Cumulative profit', fontsize=fontsize)
         axs[0].grid(alpha=0.5)
 
-        axs[1].plot((df[f'{prefixes[i]}.e_ch_kwh']+df[f'{prefixes[i]}.e_ch_kwh']).cumsum(), label=labels[i])
+        axs[1].plot((df[f'{prefixes[i]}.e_ch_kwh']+df[f'{prefixes[i]}.e_dis_kwh']).cumsum(), label=labels[i], linewidth=2)
         # axs[1].plot(1000*rbc['Volume'].abs().cumsum(), label='Rule-based control')
-        axs[1].legend()
-        axs[1].set_ylabel('Cumulative traded volume [kWh]')
-        axs[1].set_title('Cumulative traded volume')
+        axs[1].legend(fontsize=fontsize)
+        axs[1].set_ylabel('Cumulative traded volume [kWh]', fontsize=fontsize)
+        axs[1].set_title('Cumulative traded volume', fontsize=fontsize)
         axs[1].grid(alpha=0.5)
-    fig.supxlabel('Time')
+    fig.supxlabel('Time', fontsize=fontsize)
     plt.show()
 
+
+def calculate_cumulative_profit_per_trade(results, labels, prefixes):
+    summary = pd.DataFrame()
+    for i, r in enumerate(results):
+        df, metadata = r
+        profit = df[f'{prefixes[i]}.profit_realized_eur'].sum()
+        volume = (df[f'{prefixes[i]}.e_ch_kwh']+df[f'{prefixes[i]}.e_dis_kwh']).sum() / 1000
+        summary.at[labels[i], 'Profit per MWh'] = profit / volume
+    print(summary)
 
 def plot_profit_as_function_of_labels(results, labels, prefixes):
     tot_profits = []
     for i, r in enumerate(results):
         df, _ = r
-        tot_profits += [df[f'{prefixes[i]}.profit_realized_eur'].sum()]
+        volume = (df[f'{prefixes[i]}.e_ch_kwh'] + df[f'{prefixes[i]}.e_dis_kwh']).sum() / 1000
+        tot_profits += [df[f'{prefixes[i]}.profit_realized_eur'].sum() / volume]
     plt.plot(labels, tot_profits)
     plt.xlabel('Case')
     plt.ylabel('Profit [€]')
@@ -123,41 +182,68 @@ def plot_trades_histogram(results, labels, prefixes):
 
 
 # Specify paths to compare, and their labels for plotting
+# --- Per-minute vs QH-MPC comparison (ensembletot_pm run) ---
 paths_to_compare = [
+                    'ip_rolling_ce/ip_rolling_ce_ensembletot_pm_deterministic_forecast_TP_L2_0.01_CP_0__pm_v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_ensembletot_pm_deterministic_forecast_TP_L2_0.01_CP_0__qh_v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L2_0.01_CP_0__v1.parquet',
+                    ]
+labels = ['PM', 'QH', 'Perfect']
+prefixes = ['ensembletot_pm.forecast', 'ensembletot_pm.forecast', 'benchmark.perfect_foresight']
+probabilistic = [0, 0, 0]
+
+# --- Old QR / twostep sweep (kept for reference) ---
+_paths_to_compare_old = [
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L1_0.01_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L1_0.03_CP_0__v1.parquet',
-                    'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L1_0.1_CP_0__v1.parquet',
+                    # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L1_0.1_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L1_0.3_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L2_0.001_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L2_0.003_CP_0__v1.parquet',
-                    # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_forecast_TP_L2_0.03_CP_0__v1.parquet',
-                    'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L1_0.1_CP_0__v1.parquet',
+                    # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L1_0.1_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L1_0.01_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L1_0.3_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L1_0.03_CP_0__v1.parquet',
-                    # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L2_0.01_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L2_0.001_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L2_0.03_CP_0__v1.parquet',
                     # 'ip_rolling_ce/ip_rolling_ce_qr_deterministic_perfect_foresight_TP_L2_0.003_CP_0__v1.parquet'
                     # 'ip_rolling_prob/ip_rolling_prob_qr_quantile_paths_cvar_a0p95_l0p1_TP_L1_0.1_CP_0_v1.parquet'
                     # 'ip_rolling_prob/ip_rolling_prob_qr_quantile_paths_cvar_a0p95_l0p3_TP_L1_0.1_CP_0_v1.parquet'
                     # 'ip_rolling_prob/ip_rolling_prob_qr_copula_lambCorr_0.995_cvar_a0p95_l0p1_TP_L1_0.1_CP_0_v1.parquet'
-                    'ip_rolling_prob/ip_rolling_prob_qr_copula_lambCorr_0.995_cvar_a0p95_l0p3_TP_L1_0.1_CP_0_v1.parquet'
+                    # 'ip_rolling_prob/ip_rolling_prob_qr_copula_lambCorr_0.995_cvar_a0p95_l0p3_TP_L1_0.1_CP_0_v1.parquet'
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p0_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p05_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p1_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p15_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p2_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p25_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p3_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p35_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p4_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p45_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
+                    'ip_rolling_ce/ip_rolling_ce_twostep0p5_deterministic_forecast_TP_L2_0.01_CP_0__v1.parquet',
                     ]
 
 # labels = ['QR forecast', 'Perfect foresight']
 # labels = ['L1 0.01', 'L2 0.01']
-labels = ['Deterministic forecast', 'Perfect foresight', 'Probabilistic forecast']
+# labels = ['Deterministic forecast', 'Perfect foresight', 'Probabilistic forecast']
+_labels_old = ['QR', 'Perfect', '0.0', '0.05', '0.1', '0.15', '0.2', '0.25', '0.3', '0.35', '0.4', '0.45', '0.5']
 # labels = ['Deterministic forecast', 'Probabilistic forecast']
 # labels = ['L1\n0.01', 'L1\n0.03', 'L1\n0.1', 'L1\n0.3', 'L2\n0.001', 'L2\n0.003', 'L2\n0.01', 'L2\n0.03']
 # prefixes = ['qr.forecast', 'benchmark.perfect_foresight']
 # prefixes = ['qr.forecast']*2
-prefixes = ['qr.forecast', 'benchmark.perfect_foresight', 'qr.prob.cvar_a0p95_l0p3']
+# prefixes = ['qr.forecast', 'benchmark.perfect_foresight', 'qr.prob.cvar_a0p95_l0p3']
+_prefixes_old = ['qr.forecast', 'benchmark.perfect_foresight', 'twostep0p0.forecast', 'twostep0p05.forecast', 'twostep0p1.forecast',
+            'twostep0p15.forecast', 'twostep0p2.forecast', 'twostep0p25.forecast', 'twostep0p3.forecast',
+            'twostep0p35.forecast', 'twostep0p4.forecast', 'twostep0p45.forecast', 'twostep0p5.forecast']
 # prefixes = ['qr.forecast', 'qr.prob.cvar_a0p95_l0p1']
 # prefixes = ['qr.forecast']*8
-probabilistic = [0, 0, 1]
-forecast_path = 'IP_QR.csv'
+# probabilistic = [0, 0, 1]
+_probabilistic_old = [0]*9
+forecast_path = 'IP_twostep0p0.csv'
 
 # Load the desired results
 results = []
@@ -184,15 +270,18 @@ real_prices.index = pd.to_datetime(real_prices.index)
 # start = pd.Timestamp(year=2023, month=1, day=25, hour=16)
 # end = pd.Timestamp(year=2023, month=1, day=25, hour=22)
 start = pd.Timestamp(year=2023, month=1, day=1, hour=0)
-end = pd.Timestamp(year=2023, month=1, day=1, hour=6)
+end = pd.Timestamp(year=2023, month=1, day=3, hour=0)
 quantiles = [0.01, 0.05, 0.1, 0.2, 0.3, 0.4]
 alphas = [0.01, 0.05, 0.1, 0.2, 0.4, 0.6]
-plot_trading_decisions(results, labels, prefixes, forecast, real_prices, start, end, probabilistic, quantiles, alphas)
+# plot_trading_decisions(results, labels, prefixes, forecast, real_prices, start, end, probabilistic, quantiles, alphas)
+
+plot_price_and_decisions(results, labels, prefixes, real_prices, start, end)
 
 plot_cumulative_results(results, labels, prefixes)
+calculate_cumulative_profit_per_trade(results, labels, prefixes)
 
-# plot_profit_as_function_of_labels(results, labels, prefixes)
+plot_profit_as_function_of_labels(results, labels, prefixes)
 
-# plot_daily_profit_over_time(results, labels, prefixes)
+plot_daily_profit_over_time(results, labels, prefixes)
 
 plot_trades_histogram(results, labels, prefixes)
